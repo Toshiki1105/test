@@ -34,7 +34,7 @@ resource "aws_security_group" "web_sg" {
     from_port   = 80
     to_port     = 80
     protocol    = "tcp"
-    cidr_blocks = ["118.237.255.201/32"]
+    cidr_blocks = ["0.0.0.0/0"]
     description = "Allow HTTP access"
   }
 
@@ -88,7 +88,7 @@ resource "aws_instance" "web_server" {
 # Terraform backend
 terraform {
   backend "s3" {
-    bucket = "tokio-tfstate"
+    bucket = "tokio.t-tfstate"
     key    = "wordpress/terraform.tfstate"
     region = "us-west-2"
   }
