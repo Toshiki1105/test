@@ -18,7 +18,7 @@ data "aws_ami" "amazon_linux" {
 resource "aws_security_group" "web_sg" {
   name        = "tokio_sg"
   description = "Security group for WordPress server"
-  vpc_id      = "vpc-009484d4b9b045f5e"
+  vpc_id      = "vpc-07d543bd6a6ec0b42"
 
   # SSH（自分のIPから）
   ingress {
