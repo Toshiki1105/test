@@ -1,0 +1,108 @@
+---
+- name: Provision WordPress Server
+  hosts: web
+  become: yes
+  gather_facts: yes
+
+  vars:
+    db_name: wordpress_db
+    db_user: wordpress_user
+    db_password: wordpress_pass
+    mysql_root_password: root_pass
+    mariadb_service_names:
+      - mariadb
+      - mariadb.service
+      - mysqld
+      - mysqld.service
+
+  tasks:
+    - name: Install required packages
+      dnf:
+        name:
+          - wget
+          - httpd
+          - php
+          - php-fpm
+          - php-json
+          - php-mysqlnd
+          - mariadb105-server
+        state: present
+
+    - name: Enable and start Apache
+      systemd:
+        name: httpd
+        state: started
+        enabled: yes
+
+    - name: Enable and start MariaDB
+      systemd:
+        name: "{{ item }}"
+        state: started
+        enabled: yes
+      loop: "{{ mariadb_service_names }}"
+      ignore_errors: yes
+
+    - name: Wait for MariaDB socket
+      wait_for:
+        path: /var/lib/mysql/mysql.sock
+        state: present
+        timeout: 60
+
+    - name: Set root password and authentication method
+      community.mysql.mysql_user:
+        name: root
+        host: localhost
+        password: "{{ mysql_root_password }}"
+        plugin: mysql_native_password
+        state: present
+        check_implicit_admin: yes
+        login_unix_socket: /var/lib/mysql/mysql.sock
+
+    - name: Create WordPress database
+      community.mysql.mysql_db:
+        name: "{{ db_name }}"
+        state: present
+        login_user: root
+        login_password: "{{ mysql_root_password }}"
+
+    - name: Create WordPress DB user
+      community.mysql.mysql_user:
+        name: "{{ db_user }}"
+        password: "{{ db_password }}"
+        priv: "{{ db_name }}.*:ALL"
+        host: "%"
+        state: present
+        login_user: root
+        login_password: "{{ mysql_root_password }}"
+
+    - name: Download WordPress
+      get_url:
+        url: https://ja.wordpress.org/latest-ja.tar.gz
+        dest: /tmp/wordpress.tar.gz
+
+    - name: Extract WordPress
+      unarchive:
+        src: /tmp/wordpress.tar.gz
+        dest: /var/www/html/
+        remote_src: yes
+        creates: /var/www/html/wordpress
+
+    - name: Update wp-config.php for database settings
+      lineinfile:
+        path: /var/www/html/wordpress/wp-config.php
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+      loop:
+        - regexp: '^define\s*\(\s*''DB_NAME'',' 
+          line: 'define( ''DB_NAME'', ''{{ db_name }}'' );'
+        - regexp: '^define\s*\(\s*''DB_USER'',' 
+          line: 'define( ''DB_USER'', ''{{ db_user }}'' );'
+        - regexp: '^define\s*\(\s*''DB_PASSWORD'',' 
+          line: 'define( ''DB_PASSWORD'', ''{{ db_password }}'' );'
+
+    - name: Set permissions
+      file:
+        path: /var/www/html/wordpress
+        owner: apache
+        group: apache
+        recurse: yes

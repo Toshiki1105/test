@@ -1,0 +1,119 @@
+name: Terraform + Ansible CI/CD
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  terraform-ansible:
+    name: Terraform + Ansible
+    runs-on: ubuntu-latest
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
+
+    steps:
+      # 1. リポジトリチェックアウト
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      # 2. Terraformセットアップ
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      # 3. Terraform init
+      - name: Terraform Init
+        run: |
+          cd terraform
+          terraform init -backend-config="bucket=$TF_STATE_BUCKET" -reconfigure
+
+
+      # 4. Terraform apply
+      - name: Terraform Apply
+        run: |
+          cd terraform
+          terraform apply -auto-approve
+        continue-on-error: false
+
+      # 5. EC2パブリックIP取得
+      - name: Get EC2 Public IP
+        id: get_ip
+        run: |
+          cd terraform
+          EC2_IP=$(terraform output -raw instance_public_ip)
+          echo "EC2_IP=$EC2_IP" >> $GITHUB_ENV
+          echo "EC2_IP=$EC2_IP"
+
+      # 6. Security Group ID取得
+      - name: Get Security Group ID
+        id: get_sg
+        run: |
+          cd terraform
+          SG_ID=$(terraform output -raw security_group_id)
+          echo "SG_ID=$SG_ID" >> $GITHUB_ENV
+          echo "SG_ID=$SG_ID"
+
+      # 7. Ansibleセットアップ
+      - name: Install Ansible
+        run: sudo apt-get update && sudo apt-get install -y ansible
+
+      # 8. SSH鍵セット
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "$EC2_SSH_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+        env:
+          EC2_SSH_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      # 9. GitHubランナーのIPをSGに許可
+      - name: Authorize GitHub Runner IP
+        run: |
+          RUNNER_IP=$(curl -s ifconfig.me)
+          echo "Allowing SSH from $RUNNER_IP"
+          echo "Using SG_ID=$SG_ID"
+          aws ec2 authorize-security-group-ingress \
+            --group-id $SG_ID \
+            --protocol tcp \
+            --port 22 \
+            --cidr $RUNNER_IP/32
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: us-west-2
+
+      # 10. 動的Ansibleインベントリ作成
+      - name: Create dynamic Ansible inventory
+        run: |
+          mkdir -p ansible
+          echo "[webservers]" > ansible/inventory.ini
+          echo "$EC2_IP ansible_user=ec2-user ansible_ssh_private_key_file=~/.ssh/id_rsa" >> ansible/inventory.ini
+
+      # 11. SSH接続テスト（オプション）
+      - name: Test SSH connection
+        run: ssh -o StrictHostKeyChecking=no ec2-user@$EC2_IP "echo SSH OK"
+
+      # 12. Ansibleプレイブック実行
+      - name: Run Ansible Playbook
+        run: |
+          ansible-playbook -i ansible/inventory.ini ansible/playbook.yml \
+            -e "mysql_root_password=${{ secrets.MYSQL_ROOT_PASSWORD }}"
+
+      # 13. 最後にSSH許可削除（セキュリティ向上）
+      - name: Revoke GitHub Runner IP
+        if: always()
+        run: |
+          RUNNER_IP=$(curl -s ifconfig.me)
+          echo "Revoking SSH from $RUNNER_IP"
+          echo "Using SG_ID=$SG_ID"
+          aws ec2 revoke-security-group-ingress \
+            --group-id $SG_ID \
+            --protocol tcp \
+            --port 22 \
+            --cidr $RUNNER_IP/32
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: us-west-2
